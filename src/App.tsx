@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { 
   Shield, Lock, Plus, Search, Star, Trash2, Edit2, Copy, Eye, EyeOff, 
-  Key, CreditCard, User, FileText, Building, Server, Database, X
+  Key, CreditCard, User, FileText, Building, Server, Database, X, Settings as SettingsIcon
 } from 'lucide-react';
+import { useGlobalShortcut } from './hooks/useGlobalShortcut';
+import TitleBar from './components/TitleBar';
+import Settings from './components/Settings';
 import './App.css';
 
 interface Entry {
@@ -56,8 +60,10 @@ const categoryIcons: Record<string, React.ReactNode> = {
 };
 
 function App() {
+  const { reloadShortcut } = useGlobalShortcut();
   const [isInitialized, setIsInitialized] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
@@ -152,6 +158,8 @@ function App() {
       await invoke('unlock_vault', { password });
       setIsUnlocked(true);
       loadData();
+      // 通知快速面板窗口保险库已解锁
+      await emit('vault-unlocked', {});
     } catch (err) {
       setError('Invalid master password');
     }
@@ -306,7 +314,7 @@ function App() {
     setGeneratedPassword('');
   };
 
-  const copyToClipboard = async (text: string) => {
+const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
     } catch (err) {
@@ -314,8 +322,27 @@ function App() {
     }
   };
 
+  const copyPasswordToClipboard = async (id: string) => {
+    try {
+      await invoke('copy_password_to_clipboard', { id });
+    } catch (err) {
+      console.error('Failed to copy password:', err);
+    }
+  };
+
+  const copyUsernameToClipboard = async (id: string) => {
+    try {
+      await invoke('copy_username_to_clipboard', { id });
+    } catch (err) {
+      console.error('Failed to copy username:', err);
+    }
+  };
+
   const filteredEntries = entries.filter((entry) => {
-    const matchesCategory = selectedCategory === 'all' || entry.category === selectedCategory;
+    const matchesCategory = 
+      selectedCategory === 'all' || 
+      (selectedCategory === 'favorites' && entry.favorite) ||
+      entry.category === selectedCategory;
     const matchesSearch = 
       entry.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       entry.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -330,7 +357,9 @@ function App() {
 
   if (!isInitialized) {
     return (
-      <div className="auth-container">
+      <>
+        <TitleBar />
+        <div className="auth-container">
         <div className="auth-card">
           <div className="auth-logo">
             <div className="logo-icon">
@@ -370,14 +399,34 @@ function App() {
               Create Vault
             </button>
           </form>
+          
+          <button 
+            className="btn btn-secondary" 
+            style={{ width: '100%', marginTop: '10px' }}
+            onClick={async () => {
+              if (confirm('Are you sure you want to reset the vault? All data will be lost.')) {
+                try {
+                  await invoke('reset_vault');
+                  window.location.reload();
+                } catch (err) {
+                  console.error('Failed to reset vault:', err);
+                }
+              }
+            }}
+          >
+            Reset Vault
+          </button>
         </div>
       </div>
+      </>
     );
   }
 
   if (!isUnlocked) {
     return (
-      <div className="auth-container">
+      <>
+        <TitleBar />
+        <div className="auth-container">
         <div className="auth-card">
           <div className="auth-logo">
             <div className="logo-icon">
@@ -408,11 +457,14 @@ function App() {
           </form>
         </div>
       </div>
+      </>
     );
   }
 
   return (
-    <div className="app-container">
+    <>
+      <TitleBar />
+      <div className="app-container">
       {/* Sidebar */}
       <div className="sidebar">
         <div className="sidebar-header">
@@ -462,6 +514,10 @@ function App() {
         </div>
         
         <div className="sidebar-footer">
+          <button className="lock-btn" onClick={() => setShowSettings(true)}>
+            <SettingsIcon size={18} />
+            Settings
+          </button>
           <button className="lock-btn" onClick={handleLock}>
             <Lock size={18} />
             Lock Vault
@@ -531,10 +587,26 @@ function App() {
                   </div>
                   <h3 className="entry-title">{entry.title}</h3>
                   <p className="entry-username">{entry.username}</p>
-                  <div className="entry-footer">
+<div className="entry-footer">
                     <span className="entry-category">
                       {categories.find(c => c.id === entry.category)?.name || entry.category}
                     </span>
+                    <div className="entry-actions">
+                      <button 
+                        className="action-btn" 
+                        onClick={(e) => { e.stopPropagation(); copyUsernameToClipboard(entry.id); }}
+                        title="Copy username"
+                      >
+                        <User size={14} />
+                      </button>
+                      <button 
+                        className="action-btn" 
+                        onClick={(e) => { e.stopPropagation(); copyPasswordToClipboard(entry.id); }}
+                        title="Copy password"
+                      >
+                        <Key size={14} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -791,6 +863,12 @@ function App() {
         </div>
       )}
     </div>
+    <Settings 
+      isOpen={showSettings} 
+      onClose={() => setShowSettings(false)} 
+      onSettingsChange={reloadShortcut}
+    />
+    </>
   );
 }
 

@@ -1,11 +1,14 @@
 use crate::crypto::generate_random_password;
 use crate::db::Database;
-use crate::models::{AccountTemplate, Category, PasswordRule, VaultEntry, VaultEntry as Entry};
+use crate::models::{AccountTemplate, Category, PasswordRule, VaultEntry};
 use chrono::Utc;
+use enigo::{Enigo, Keyboard, Settings};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::State;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::time::sleep;
 use uuid::Uuid;
 
 pub struct AppState {
@@ -127,6 +130,11 @@ pub struct GeneratePasswordRequest {
 #[tauri::command]
 pub fn check_vault_exists(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.db.is_initialized())
+}
+
+#[tauri::command]
+pub fn reset_vault(state: State<'_, AppState>) -> Result<(), String> {
+    state.db.reset_vault()
 }
 
 #[tauri::command]
@@ -322,4 +330,138 @@ pub fn init_app_state(app_dir: PathBuf) -> Result<AppState, String> {
     let db = Database::new(db_path).map_err(|e| format!("Failed to initialize database: {}", e))?;
 
     Ok(AppState { db: Arc::new(db) })
+}
+
+#[tauri::command]
+pub fn get_cursor_position(app: AppHandle) -> Result<(f64, f64), String> {
+    app.cursor_position()
+        .map(|pos| (pos.x, pos.y))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn create_quick_panel(app: AppHandle) -> Result<(), String> {
+    log::info!("[QuickPanel] Emitting show-quick-panel event...");
+    
+    app.emit("show-quick-panel", ())
+        .map_err(|e| {
+            log::error!("[QuickPanel] Failed to emit event: {}", e);
+            e.to_string()
+        })?;
+    
+    log::info!("[QuickPanel] Event emitted successfully");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn close_quick_panel(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("quickpanel") {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_password_to_clipboard(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    if !state.db.is_unlocked() {
+        return Err("Vault is locked".to_string());
+    }
+
+    let entry = state.db.get_entry(&id)?;
+    let password = entry.password.clone();
+
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard()
+        .write_text(&password)
+        .map_err(|e| e.to_string())?;
+
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        sleep(Duration::from_secs(30)).await;
+        if let Err(e) = app_clone.clipboard().write_text("") {
+            log::error!("Failed to clear clipboard: {}", e);
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_username_to_clipboard(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    if !state.db.is_unlocked() {
+        return Err("Vault is locked".to_string());
+    }
+
+    let entry = state.db.get_entry(&id)?;
+    let username = entry.username.clone();
+
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    app.clipboard()
+        .write_text(&username)
+        .map_err(|e| e.to_string())?;
+
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        sleep(Duration::from_secs(30)).await;
+        if let Err(e) = app_clone.clipboard().write_text("") {
+            log::error!("Failed to clear clipboard: {}", e);
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn simulate_paste() -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
+
+    enigo
+        .key(enigo::Key::Control, enigo::Direction::Press)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(enigo::Key::Unicode('v'), enigo::Direction::Click)
+        .map_err(|e| e.to_string())?;
+    enigo
+        .key(enigo::Key::Control, enigo::Direction::Release)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QuickEntryDto {
+    pub id: String,
+    pub title: String,
+    pub username: String,
+    pub category: String,
+    pub favorite: bool,
+}
+
+#[tauri::command]
+pub fn get_quick_entries(state: State<'_, AppState>) -> Result<Vec<QuickEntryDto>, String> {
+    if !state.db.is_unlocked() {
+        return Ok(vec![]);
+    }
+
+    let entries = state.db.get_entries()?;
+    let quick_entries: Vec<QuickEntryDto> = entries
+        .into_iter()
+        .map(|e| QuickEntryDto {
+            id: e.id,
+            title: e.title,
+            username: e.username,
+            category: e.category,
+            favorite: e.favorite,
+        })
+        .collect();
+
+    Ok(quick_entries)
 }

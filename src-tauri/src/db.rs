@@ -207,6 +207,24 @@ impl Database {
         crypto.lock();
     }
 
+    pub fn reset_vault(&self) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM config", [])
+            .map_err(|e| format!("Failed to reset vault: {}", e))?;
+        self.conn
+            .execute("DELETE FROM entries", [])
+            .map_err(|e| format!("Failed to reset vault: {}", e))?;
+        self.conn
+            .execute("DELETE FROM templates", [])
+            .map_err(|e| format!("Failed to reset vault: {}", e))?;
+
+        // Lock the vault
+        let mut crypto = self.crypto.lock();
+        crypto.lock();
+
+        Ok(())
+    }
+
     pub fn is_unlocked(&self) -> bool {
         self.crypto.lock().is_unlocked()
     }
